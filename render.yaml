@@ -1,0 +1,33 @@
+# Render blueprint: one web service with a persistent disk for SQLite.
+# Secrets marked sync: false are entered in the Render dashboard, never committed.
+services:
+  - type: web
+    name: bookleaf-support
+    runtime: node
+    plan: starter # persistent disks require a paid instance type
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    disk:
+      name: data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_PATH
+        value: /var/data/bookleaf.db
+      - key: SEED_ON_START
+        value: "true"
+      - key: TRUST_PROXY
+        value: "true"
+      - key: AI_MODEL
+        value: claude-haiku-5-5
+      - key: ALLOWED_ORIGINS
+        sync: false # e.g. https://bookleaf-support.onrender.com
+      - key: SEED_DEMO_PASSWORD
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false

@@ -1,0 +1,415 @@
+openapi: 3.1.0
+info:
+  title: BookLeaf Author Support API
+  version: 1.0.0
+  description: |
+    REST API behind the BookLeaf Author Support & Communication Portal.
+
+    **Authentication**: `POST /api/auth/login` sets an httpOnly `bl_session` cookie
+    (SameSite=Lax, Secure in production). Every other endpoint except `/api/health`
+    requires that cookie. State-changing requests carrying a foreign `Origin` are rejected (403).
+
+    **Roles**: `/api/author/*` is author-only and always scoped to the signed-in author.
+    `/api/admin/*` is admin-only. Records belonging to another author return 404, not 403,
+    so IDs cannot be probed.
+
+    **Errors** always have the shape `{ "error": { "code", "message", "details?" } }`.
+servers:
+  - url: http://localhost:4000
+security:
+  - session: []
+
+components:
+  securitySchemes:
+    session:
+      type: apiKey
+      in: cookie
+      name: bl_session
+  parameters:
+    TicketId:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer, minimum: 1 }
+  responses:
+    BadRequest:
+      description: Validation failed (`validation_error` with per-field `details`) or bad input
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Unauthorized:
+      description: No valid session
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Forbidden:
+      description: Signed in with the wrong role, or cross-origin request
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    NotFound:
+      description: Not found (or not yours)
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    RateLimited:
+      description: Too many requests
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, examples: [validation_error, not_found, ai_unavailable] }
+            message: { type: string }
+            details: {}
+    Category:
+      type: string
+      enum: [Royalty & Payments, ISBN & Metadata Issues, Printing & Quality, Distribution & Availability, Book Status & Production Updates, General Inquiry]
+    Priority: { type: string, enum: [Critical, High, Medium, Low] }
+    Status: { type: string, enum: [Open, In Progress, Resolved, Closed] }
+    TriageSource:
+      type: string
+      enum: [pending, ai, rules, admin]
+      description: Where the category/priority came from. `rules` = keyword fallback used because AI was unavailable.
+    User:
+      type: object
+      properties:
+        id: { type: integer }
+        email: { type: string }
+        name: { type: string }
+        role: { type: string, enum: [author, admin] }
+        authorId: { type: [string, "null"], examples: [AUTH001] }
+    Book:
+      type: object
+      description: Mirrors the sample dataset. Nullable fields are null for books still in production.
+      properties:
+        id: { type: string, examples: [BK001] }
+        authorId: { type: string }
+        title: { type: string }
+        isbn: { type: [string, "null"] }
+        genre: { type: [string, "null"] }
+        publicationDate: { type: [string, "null"], format: date }
+        status: { type: string, examples: [Published & Live, In Production - Cover Design] }
+        mrp: { type: [integer, "null"] }
+        authorRoyaltyPerCopy: { type: [integer, "null"] }
+        totalCopiesSold: { type: integer }
+        totalRoyaltyEarned: { type: integer }
+        royaltyPaid: { type: integer }
+        royaltyPending: { type: integer }
+        lastRoyaltyPayoutDate: { type: [string, "null"], format: date }
+        printPartner: { type: [string, "null"] }
+        availableOn: { type: array, items: { type: string } }
+    Message:
+      type: object
+      properties:
+        id: { type: integer }
+        senderRole: { type: string, enum: [author, admin] }
+        senderName: { type: string }
+        body: { type: string }
+        createdAt: { type: string, format: date-time }
+    Attachment:
+      type: object
+      properties:
+        id: { type: integer }
+        filename: { type: string }
+        mimeType: { type: string }
+        sizeBytes: { type: integer }
+    AuthorTicket:
+      type: object
+      description: Author-visible fields only. Never contains internal notes, triage rationale or assignee.
+      properties:
+        id: { type: integer }
+        subject: { type: string }
+        description: { type: string }
+        status: { $ref: "#/components/schemas/Status" }
+        category: { oneOf: [{ $ref: "#/components/schemas/Category" }, { type: "null" }] }
+        priority: { oneOf: [{ $ref: "#/components/schemas/Priority" }, { type: "null" }] }
+        bookId: { type: [string, "null"] }
+        bookTitle: { type: [string, "null"] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        messages: { type: array, items: { $ref: "#/components/schemas/Message" } }
+        attachments: { type: array, items: { $ref: "#/components/schemas/Attachment" } }
+    AdminTicketSummary:
+      type: object
+      properties:
+        id: { type: integer }
+        subject: { type: string }
+        status: { $ref: "#/components/schemas/Status" }
+        category: { oneOf: [{ $ref: "#/components/schemas/Category" }, { type: "null" }] }
+        categorySource: { $ref: "#/components/schemas/TriageSource" }
+        priority: { oneOf: [{ $ref: "#/components/schemas/Priority" }, { type: "null" }] }
+        prioritySource: { $ref: "#/components/schemas/TriageSource" }
+        authorId: { type: string }
+        authorName: { type: string }
+        bookId: { type: [string, "null"] }
+        bookTitle: { type: [string, "null"] }
+        assigneeId: { type: [integer, "null"] }
+        assigneeName: { type: [string, "null"] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        firstResponseAt: { type: [string, "null"], format: date-time }
+        overdue: { type: boolean, description: Unresolved and waiting for BookLeaf longer than the priority's response target }
+        messageCount: { type: integer }
+    AdminTicketDetail:
+      allOf:
+        - $ref: "#/components/schemas/AdminTicketSummary"
+        - type: object
+          properties:
+            description: { type: string }
+            triageRationale: { type: [string, "null"] }
+            triageError: { type: [string, "null"], description: Why AI triage was not used, if it was not }
+            messages: { type: array, items: { $ref: "#/components/schemas/Message" } }
+            attachments: { type: array, items: { $ref: "#/components/schemas/Attachment" } }
+            notes:
+              type: array
+              items:
+                type: object
+                properties: { id: { type: integer }, authorName: { type: string }, body: { type: string }, createdAt: { type: string } }
+            events:
+              type: array
+              items:
+                type: object
+                properties: { id: { type: integer }, actorName: { type: [string, "null"] }, type: { type: string }, detail: { type: string }, createdAt: { type: string } }
+            book: { oneOf: [{ $ref: "#/components/schemas/Book" }, { type: "null" }] }
+            author:
+              type: object
+              properties: { id: { type: string }, name: { type: string }, email: { type: string }, city: { type: [string, "null"] }, joinedDate: { type: [string, "null"] } }
+    AiDraft:
+      type: object
+      properties:
+        body: { type: string }
+        checklist: { type: array, items: { type: string }, description: Actions/facts the admin must verify before or after sending }
+        model: { type: string }
+        createdAt: { type: string, format: date-time }
+        stale: { type: boolean, description: True if the author has written since the draft was generated }
+
+paths:
+  /api/health:
+    get:
+      summary: Liveness and AI configuration (no secrets)
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              example: { status: ok, ai: { configured: true, model: claude-haiku-5-5 } }
+
+  /api/auth/login:
+    post:
+      summary: Sign in (author or admin)
+      security: []
+      description: Rate limited to 10 attempts per 15 minutes per IP+email and 100 per IP.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties: { email: { type: string, format: email }, password: { type: string } }
+      responses:
+        "200":
+          description: Signed in; sets the session cookie
+          content: { application/json: { schema: { type: object, properties: { user: { $ref: "#/components/schemas/User" } } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { description: "`invalid_credentials` (same response for unknown email and wrong password)" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/auth/logout:
+    post:
+      summary: Sign out (deletes the server-side session)
+      responses: { "204": { description: Signed out } }
+  /api/auth/me:
+    get:
+      summary: Current user
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: object, properties: { user: { $ref: "#/components/schemas/User" } } } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/author/profile:
+    get:
+      summary: "[author] Own author profile"
+      responses: { "200": { description: "{ author }" }, "403": { $ref: "#/components/responses/Forbidden" } }
+  /api/author/summary:
+    get:
+      summary: "[author] Dashboard totals computed from own books and tickets"
+      responses: { "200": { description: "{ books, copiesSold, royaltyEarned, royaltyPaid, royaltyPending, tickets }" } }
+  /api/author/books:
+    get:
+      summary: "[author] Own books"
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: object, properties: { books: { type: array, items: { $ref: "#/components/schemas/Book" } } } } } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/author/tickets:
+    get:
+      summary: "[author] Own tickets with replies"
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: object, properties: { tickets: { type: array, items: { $ref: "#/components/schemas/AuthorTicket" } } } } } } }
+    post:
+      summary: "[author] Create a ticket"
+      description: |
+        Returns immediately; AI classification and priority run in the background (falling back to
+        keyword rules if the AI provider is unavailable). Send JSON, or multipart/form-data when
+        attaching one file (PNG/JPEG/WEBP/PDF, max 5 MB, type checked by file signature).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subject, description]
+              properties:
+                bookId: { type: [string, "null"], description: "One of your book IDs, or empty/null for General / Account Level" }
+                subject: { type: string, minLength: 5, maxLength: 150 }
+                description: { type: string, minLength: 20, maxLength: 5000 }
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                bookId: { type: string }
+                subject: { type: string }
+                description: { type: string }
+                attachment: { type: string, format: binary }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { type: object, properties: { ticket: { $ref: "#/components/schemas/AuthorTicket" } } } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "413": { description: Attachment larger than 5 MB }
+  /api/author/tickets/{id}:
+    parameters: [{ $ref: "#/components/parameters/TicketId" }]
+    get:
+      summary: "[author] One own ticket"
+      responses:
+        "200": { description: "{ ticket: AuthorTicket }" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/author/tickets/{id}/messages:
+    parameters: [{ $ref: "#/components/parameters/TicketId" }]
+    post:
+      summary: "[author] Follow-up message (reopens a Resolved ticket)"
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [body], properties: { body: { type: string, maxLength: 5000 } } } } } }
+      responses:
+        "201": { description: "{ ticket: AuthorTicket }" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: Ticket is Closed }
+
+  /api/attachments/{id}:
+    get:
+      summary: Download an attachment (ticket owner or admin)
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
+      responses:
+        "200": { description: File, served with Content-Disposition attachment and nosniff }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/events:
+    get:
+      summary: Server-Sent Events stream of ticket changes
+      description: |
+        Emits `event: ticket` with `{ ticketId, kind }` only (kind = created | updated | message | triaged).
+        Authors receive events for their own tickets; admins for all. Clients refetch via REST.
+      responses: { "200": { description: text/event-stream } }
+
+  /api/admin/stats:
+    get:
+      summary: "[admin] Queue metrics from real ticket data"
+      responses: { "200": { description: "{ open, inProgress, resolved, closed, unassigned, urgent, overdue, byCategory, avgFirstResponseHours, respondedTickets }" } }
+  /api/admin/admins:
+    get:
+      summary: "[admin] Admin users (for assignment)"
+      responses: { "200": { description: "{ admins: [{ id, name, email }] }" } }
+  /api/admin/tickets:
+    get:
+      summary: "[admin] Ticket queue"
+      parameters:
+        - { name: status, in: query, schema: { type: string }, description: "Comma-separated statuses, e.g. `Open,In Progress`" }
+        - { name: category, in: query, schema: { $ref: "#/components/schemas/Category" } }
+        - { name: priority, in: query, schema: { $ref: "#/components/schemas/Priority" } }
+        - { name: assignee, in: query, schema: { type: string, enum: [me, unassigned] } }
+        - { name: overdue, in: query, schema: { type: string, enum: ["true", "false"] } }
+        - { name: q, in: query, schema: { type: string, maxLength: 100 }, description: "Searches subject, description, author name, book title; exact author ID or ticket ID" }
+        - { name: createdFrom, in: query, schema: { type: string, format: date } }
+        - { name: createdTo, in: query, schema: { type: string, format: date }, description: Inclusive }
+        - { name: sort, in: query, schema: { type: string, enum: [urgency, newest, oldest, updated], default: urgency } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: pageSize, in: query, schema: { type: integer, default: 20, maximum: 100 } }
+      responses:
+        "200":
+          description: Paginated list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/AdminTicketSummary" } }
+                  page: { type: integer }
+                  pageSize: { type: integer }
+                  total: { type: integer }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/admin/tickets/{id}:
+    parameters: [{ $ref: "#/components/parameters/TicketId" }]
+    get:
+      summary: "[admin] Ticket detail with notes, activity, author and book facts"
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: object, properties: { ticket: { $ref: "#/components/schemas/AdminTicketDetail" } } } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      summary: "[admin] Update status, category, priority or assignee"
+      description: Unknown fields are rejected. Category/priority edits become admin overrides that re-running triage never overwrites.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              minProperties: 1
+              properties:
+                status: { $ref: "#/components/schemas/Status" }
+                category: { $ref: "#/components/schemas/Category" }
+                priority: { $ref: "#/components/schemas/Priority" }
+                assigneeId: { type: [integer, "null"], description: Must be an admin user; null unassigns }
+      responses:
+        "200": { description: "{ ticket: AdminTicketDetail }" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/admin/tickets/{id}/messages:
+    parameters: [{ $ref: "#/components/parameters/TicketId" }]
+    post:
+      summary: "[admin] Send a reply to the author (optionally changing status)"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              additionalProperties: false
+              properties:
+                body: { type: string, maxLength: 10000 }
+                status: { $ref: "#/components/schemas/Status" }
+      responses:
+        "201": { description: "{ ticket: AdminTicketDetail }" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/admin/tickets/{id}/notes:
+    parameters: [{ $ref: "#/components/parameters/TicketId" }]
+    post:
+      summary: "[admin] Add an internal note (never visible to authors)"
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [body], properties: { body: { type: string, maxLength: 5000 } } } } } }
+      responses: { "201": { description: "{ ticket: AdminTicketDetail }" } }
+  /api/admin/tickets/{id}/draft:
+    parameters: [{ $ref: "#/components/parameters/TicketId" }]
+    get:
+      summary: "[admin] Cached AI draft, if any (never calls the model)"
+      responses: { "200": { description: "{ draft: AiDraft | null }" } }
+    post:
+      summary: "[admin] Generate the AI draft"
+      description: Returns the cached draft unless it is stale or `force` is true. Rate limited to 30 per 10 minutes per admin. Nothing is sent to the author.
+      requestBody: { content: { application/json: { schema: { type: object, properties: { force: { type: boolean, default: false } } } } } }
+      responses:
+        "200": { description: "{ draft: AiDraft }" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { description: "`ai_unavailable` with `details.reason` (not_configured, timeout, rate_limited, unavailable, auth, invalid_output, refused). Write the reply manually." }
+  /api/admin/tickets/{id}/triage:
+    parameters: [{ $ref: "#/components/parameters/TicketId" }]
+    post:
+      summary: "[admin] Re-run automatic classification and priority (admin overrides are kept)"
+      responses:
+        "200": { description: "{ ticket: AdminTicketDetail }" }
+        "429": { $ref: "#/components/responses/RateLimited" }
