@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # BookLeaf Author Support & Communication Portal
 
 A web application for BookLeaf Publishing with two interfaces:
@@ -315,3 +316,6 @@ Without a persistent disk (e.g. Render's free tier) the database resets on each 
 - **Attachments are stored in SQLite** (fine at ≤ 5 MB, single file per ticket). Next: object storage (S3) with virus scanning.
 - **Overdue targets are fixed constants**, not business-hours aware.
 - Draft quality would benefit from per-platform royalty breakdowns and bank-detail status, which the dataset doesn't include; the prompt tells the model to say so rather than guess.
+=======
+# bookLeaf
+>>>>>>> d8135a0abf2b6f59d275069de2feeaa5e25fef1c
